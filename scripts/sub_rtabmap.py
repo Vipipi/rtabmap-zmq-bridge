@@ -10,11 +10,11 @@ def main():
 		"--topics",
 		nargs="*",
 		default=[
-			"rtabmap.tracking_pose",
-			"rtabmap.kf_pose",
+			# "rtabmap.tracking_pose",
+			# "rtabmap.kf_pose",
 			"rtabmap.kf_pose_update",
 			"rtabmap.kf_packet",
-			"rtabmap.map_correction",
+			# "rtabmap.map_correction",
 		],
 		help="Topic filters to subscribe",
 	)

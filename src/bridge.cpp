@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
+#include <map>
+#include <deque>
 #include <csignal>
 #include <atomic>
 #include <thread>
@@ -90,6 +92,21 @@ protected:
 				std::cout << "[odometry] WARNING: null pose!" << std::endl;
 				return false;
 			}
+
+			// Cache SensorData in ring buffer for keyframe publishing
+			// RTAB-Map memory may delete images before we can publish them
+			// Key by timestamp (stamp in seconds)
+			{
+				std::lock_guard<std::mutex> lock(frameBufferMutex_);
+				double stamp = e->data().stamp();
+				frameBuffer_[stamp] = e->data();
+
+				// Keep buffer size limited (ring buffer behavior)
+				while (frameBuffer_.size() > kMaxBufferSize) {
+					frameBuffer_.erase(frameBuffer_.begin());
+				}
+			}
+
 			publishTrackingPose(e->pose(), e->info().stamp);
 			return true;
 		}
@@ -253,33 +270,75 @@ private:
 
 		json pkt;
 		cv::Mat bgr, depth;
-		if (rtabmap_ && rtabmap_->getMemory()) {
-			try {
-				// Fetch images if publishFullRGBD is enabled
-				rtabmap::SensorData data = rtabmap_->getMemory()->getNodeData(refId, publishFullRGBD_, false, false, false);
-				if (!data.imageRaw().empty()) bgr = data.imageRaw().clone();
-				if (publishFullRGBD_ && !data.depthRaw().empty()) {
+		rtabmap::CameraModel cameraModel;
+		double stampSec = s.stamp();  // Keyframe timestamp from Statistics
+
+		// Lookup SensorData from ring buffer by keyframe timestamp
+		// Find the closest match (timestamps may not be exact)
+		{
+			std::lock_guard<std::mutex> lock(frameBufferMutex_);
+			if (!frameBuffer_.empty()) {
+				// Find closest timestamp using lower_bound
+				auto it = frameBuffer_.lower_bound(stampSec);
+
+				// Check both the found element and the previous one for closest match
+				if (it == frameBuffer_.end()) {
+					--it;  // Use last element if past end
+				} else if (it != frameBuffer_.begin()) {
+					auto prev = std::prev(it);
+					// Use whichever is closer
+					if (std::abs(prev->first - stampSec) < std::abs(it->first - stampSec)) {
+						it = prev;
+					}
+				}
+
+				// Use the matched frame
+				const rtabmap::SensorData & data = it->second;
+				if (!data.imageRaw().empty()) {
+					bgr = data.imageRaw().clone();
+				}
+				if (!data.depthRaw().empty()) {
 					depth = data.depthRaw().clone();
 				}
 				if (data.cameraModels().size() > 0) {
-					const rtabmap::CameraModel & m = data.cameraModels()[0];
-					pkt["intrinsics"] = {
-						{"fx", m.fx()},
-						{"fy", m.fy()},
-						{"cx", m.cx()},
-						{"cy", m.cy()},
-						{"width", m.imageWidth()},
-						{"height", m.imageHeight()},
-						{"baseline", 0.0}
-					};
+					cameraModel = data.cameraModels()[0];
 				}
-				double stampMs = data.stamp();
-				if (stampMs > 0.0) {
-					uint64_t ts_ns2 = (uint64_t)(stampMs * 1e6);
-					pkt["ts_ns"] = ts_ns2;
-				}
-			} catch (...) {}
 
+				double matchedStamp = it->first;
+				double stampDiff = std::abs(matchedStamp - stampSec) * 1000.0;  // ms
+
+				// Debug: log what we got
+				std::cout << "[kf_packet] refId=" << refId
+				          << " kfStamp=" << std::fixed << stampSec
+				          << " matchStamp=" << matchedStamp
+				          << " diff=" << stampDiff << "ms"
+				          << " bgr=" << (bgr.empty() ? "EMPTY" : std::to_string(bgr.cols) + "x" + std::to_string(bgr.rows))
+				          << " depth=" << (depth.empty() ? "EMPTY" : std::to_string(depth.cols) + "x" + std::to_string(depth.rows))
+				          << " bufSize=" << frameBuffer_.size()
+				          << std::endl;
+			} else {
+				std::cout << "[kf_packet] refId=" << refId << " WARNING: frame buffer empty!" << std::endl;
+			}
+		}
+
+		if (cameraModel.isValidForProjection()) {
+			pkt["intrinsics"] = {
+				{"fx", cameraModel.fx()},
+				{"fy", cameraModel.fy()},
+				{"cx", cameraModel.cx()},
+				{"cy", cameraModel.cy()},
+				{"width", cameraModel.imageWidth()},
+				{"height", cameraModel.imageHeight()},
+				{"baseline", 0.0}
+			};
+		}
+		// Use keyframe timestamp (in seconds, convert to nanoseconds)
+		if (stampSec > 0.0) {
+			uint64_t ts_ns2 = (uint64_t)(stampSec * 1e9);
+			pkt["ts_ns"] = ts_ns2;
+		}
+
+		if (rtabmap_ && rtabmap_->getMemory()) {
 			const rtabmap::Signature * sig = rtabmap_->getMemory()->getSignature(refId);
 			if (sig) {
 				pkt["map_id"] = sig->mapId();
@@ -374,6 +433,19 @@ private:
 			}
 			lastPoses_[id] = T;
 		}
+
+		// Limit lastPoses_ size to prevent unbounded memory growth
+		// Keep only poses that are still in the current working memory
+		if (lastPoses_.size() > poses.size() * 2) {
+			std::unordered_map<int, rtabmap::Transform> filtered;
+			for (const auto & kv : poses) {
+				auto it = lastPoses_.find(kv.first);
+				if (it != lastPoses_.end()) {
+					filtered[kv.first] = it->second;
+				}
+			}
+			lastPoses_ = std::move(filtered);
+		}
 	}
 
 	void sendMultipart(const std::string & topic, const std::string & jsonStr, const std::vector<unsigned char> * bin1 = nullptr, const std::vector<unsigned char> * bin2 = nullptr)
@@ -416,6 +488,12 @@ private:
 	rtabmap::Rtabmap * rtabmap_ {nullptr};
 	bool publishFullRGBD_ {false};
 	std::unordered_map<int, rtabmap::Transform> lastPoses_;
+
+	// Ring buffer for SensorData, keyed by timestamp (seconds)
+	// Stores recent frames so we can lookup by keyframe timestamp
+	static constexpr size_t kMaxBufferSize = 128;
+	mutable std::mutex frameBufferMutex_;
+	std::map<double, rtabmap::SensorData> frameBuffer_;  // sorted by timestamp
 };
 
 int main(int argc, char ** argv)
@@ -462,11 +540,12 @@ int main(int argc, char ** argv)
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kRGBDLinearUpdate(), "0.1"));   // 10cm translation
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kRGBDAngularUpdate(), "0.175")); // ~10 degrees rotation
 
-	// Memory management (using RTAB-Map defaults from Table 2)
+	// Memory management
+	// Note: We use our own ring buffer for images, so RTAB-Map can manage its memory normally
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemIncrementalMemory(), "true"));
-	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemImageKept(), "true"));
-	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemSTMSize(), "30"));           // default: 30 nodes
-	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemRehearsalSimilarity(), "0.2")); // default: 0.2
+	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemImageKept(), "false"));        // We have our own buffer, don't duplicate
+	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemSTMSize(), "30"));             // Default
+	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemRehearsalSimilarity(), "0.2")); // Default - allows memory cleanup
 
 	// Disable time-based constraints
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kRtabmapTimeThr(), "0"));

@@ -1,0 +1,44 @@
+# Local editor/IDE settings
+.vscode/
+.idea/
+.vs/
+*.code-workspace
+*.suo
+*.user
+
+# OS-specific clutter
+.DS_Store
+Thumbs.db
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.python-version
+
+# Virtual environments and local tooling
+.venv/
+venv/
+.env
+.pytest_cache/
+
+# Build outputs (CMake / C++).
+build/
+cmake-build*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+*.o
+*.obj
+*.so
+*.dll
+*.a
+*.lib
+
+# Logs & misc.
+*.log
+*.tmp
+*.swp
+
