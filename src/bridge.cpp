@@ -541,11 +541,17 @@ int main(int argc, char ** argv)
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kRGBDAngularUpdate(), "0.175")); // ~10 degrees rotation
 
 	// Memory management
-	// Note: We use our own ring buffer for images, so RTAB-Map can manage its memory normally
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemIncrementalMemory(), "true"));
-	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemImageKept(), "false"));        // We have our own buffer, don't duplicate
+	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemImageKept(), "true"));         // Keep for loop closure
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemSTMSize(), "30"));             // Default
-	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemRehearsalSimilarity(), "0.2")); // Default - allows memory cleanup
+
+	// Rehearsal similarity: controls when similar nodes are merged to save memory
+	// 1.0 = disabled (keep all nodes, best for loop closure, uses more memory)
+	// 0.2 = aggressive cleanup (saves memory but may cause drift)
+	// Default: 1.0 (disabled) - prioritize accuracy over memory
+	const char * rehearsalEnv = std::getenv("REHEARSAL_SIM");
+	std::string rehearsalSim = rehearsalEnv ? rehearsalEnv : "1.0";
+	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemRehearsalSimilarity(), rehearsalSim));
 
 	// Disable time-based constraints
 	params.insert(rtabmap::ParametersPair(rtabmap::Parameters::kRtabmapTimeThr(), "0"));

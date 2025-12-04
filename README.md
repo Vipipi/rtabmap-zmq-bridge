@@ -30,13 +30,28 @@ By default the container subscribes to `tcp://host.docker.internal:5555` and pub
 
 ### Environment Variables
 
-- `SUB`: ZMQ endpoint to subscribe for RGB-D input (default: `tcp://host.docker.internal:5555`)
-- `PUB`: ZMQ endpoint to publish RTAB-Map output topics (default: `tcp://*:6000`)
-- `FULL_RGBD`: Set to `"true"` to include full-resolution RGB-D data in `kf_packet` messages (default: `false` for thumbnail only)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUB` | `tcp://host.docker.internal:5555` | ZMQ endpoint to subscribe for RGB-D input |
+| `PUB` | `tcp://*:6000` | ZMQ endpoint to publish RTAB-Map output topics |
+| `FULL_RGBD` | `false` | Set to `"true"` for full-resolution RGB-D in `kf_packet` |
+| `REHEARSAL_SIM` | `1.0` | Memory rehearsal similarity threshold (see below) |
 
-Example with full RGB-D enabled:
+#### REHEARSAL_SIM (Memory Management)
+
+Controls when similar keyframe nodes are merged to save memory:
+
+| Value | Behavior | Use Case |
+|-------|----------|----------|
+| `1.0` | Disabled - keep all nodes | Best accuracy, loop closure works reliably |
+| `0.6` | Moderate cleanup | Balance between memory and accuracy |
+| `0.2` | Aggressive cleanup | Long sessions, memory constrained (may cause drift) |
+
+**Warning**: Lower values may cause drift in revisited areas because nodes needed for loop closure get deleted.
+
+Example with full RGB-D and memory-bounded mode:
 ```bash
-docker run --rm -e SUB=tcp://172.27.240.1:5555 -e PUB=tcp://*:6000 -e FULL_RGBD=true rtabmap_zmq_bridge:latest
+FULL_RGBD=true REHEARSAL_SIM=0.6 ./scripts/run_container.sh
 ```
 
 ## 3) Consuming topics
