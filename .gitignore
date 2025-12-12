@@ -2,6 +2,8 @@
 .vscode/
 .idea/
 .vs/
+.cursor/
+.claude/
 *.code-workspace
 *.suo
 *.user
